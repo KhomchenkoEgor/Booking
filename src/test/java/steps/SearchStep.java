@@ -46,39 +46,46 @@ public class SearchStep {
     }
 
     @When("user searches for {string}")
-    public void userSearchesFor(String hotel) throws InterruptedException {
+    public void userSearchesFor(String hotel) {
+        WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
 
-        WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(20));
         wait.until(ExpectedConditions.elementToBeClickable(By.name("ss"))).click();
-        sleep(500);
 
         try {
             By clearBtnLocator = By.xpath("//button[descendant::span[@aria-label='Очистить']]");
-            WebDriverWait shortWait = new WebDriverWait(driver, Duration.ofSeconds(2));
-            shortWait.until(ExpectedConditions.elementToBeClickable(clearBtnLocator)).click();
-            sleep(500);
+            new WebDriverWait(driver, Duration.ofSeconds(2))
+                    .until(ExpectedConditions.elementToBeClickable(clearBtnLocator)).click();
         } catch (Exception e) {
-            wait.until(ExpectedConditions.elementToBeClickable(By.name("ss"))).sendKeys(Keys.CONTROL + "a");
-            wait.until(ExpectedConditions.elementToBeClickable(By.name("ss"))).sendKeys(Keys.BACK_SPACE);
-            sleep(300);
+            wait.until(ExpectedConditions.elementToBeClickable(By.name("ss")))
+                    .sendKeys(Keys.chord(Keys.CONTROL, "a"), Keys.BACK_SPACE);
         }
 
-        for (char ch : hotel.toCharArray()) {
-            wait.until(ExpectedConditions.elementToBeClickable(By.name("ss"))).sendKeys(String.valueOf(ch));
-            sleep(150);
-        }
-        sleep(800);
-
-        By dropdownItemsLocator = By.cssSelector("[data-testid='autocomplete-result'], [role='option']");
-        try {
-            wait.until(ExpectedConditions.visibilityOfElementLocated(dropdownItemsLocator));
-            List<WebElement> options = driver.findElements(dropdownItemsLocator);
-            if (!options.isEmpty()) {
-                options.get(0).click();
-                sleep(500);
+        if (hotel != null && !hotel.isEmpty()) {
+            for (char ch : hotel.toCharArray()) {
+                wait.until(ExpectedConditions.elementToBeClickable(By.name("ss")))
+                        .sendKeys(String.valueOf(ch));
+                try { Thread.sleep(150); } catch (InterruptedException ignored) {}
             }
+        }
+
+        String partialHotelName = hotel.split(" ")[0];
+        By specificOptionLocator = By.xpath(String.format(
+                "//ul[contains(@class, 'results')]//li[descendant::*[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '%s')]]" +
+                        "| //*[@data-testid='autocomplete-result'][contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '%s')]",
+                partialHotelName.toLowerCase(), partialHotelName.toLowerCase()
+        ));
+
+        try {
+            WebElement correctOption = wait.until(ExpectedConditions.elementToBeClickable(specificOptionLocator));
+            correctOption.click();
         } catch (Exception e) {
-            wait.until(ExpectedConditions.elementToBeClickable(By.name("ss"))).sendKeys(Keys.ENTER);
+            try { Thread.sleep(1500); } catch (InterruptedException ignored) {}
+            By defaultDropdownLocator = By.cssSelector("[data-testid='autocomplete-result'], [role='option']");
+            try {
+                wait.until(ExpectedConditions.elementToBeClickable(defaultDropdownLocator)).click();
+            } catch (Exception ex) {
+                wait.until(ExpectedConditions.elementToBeClickable(By.name("ss"))).sendKeys(Keys.ENTER);
+            }
         }
 
         wait.until(ExpectedConditions.elementToBeClickable(By.xpath("//button[@type='submit']"))).click();
@@ -87,17 +94,16 @@ public class SearchStep {
     @Then("{string} hotel is shown")
     public void hotelIsShown(String expectedResult) {
         WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
-        wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("[data-testid='title']")));
+        String cleanExpected = expectedResult.replaceAll("\\s+", " ").toLowerCase().trim();
 
-        List<WebElement> titles = driver.findElements(By.cssSelector("[data-testid='title']"));
-        boolean isHotelFound = false;
-        for (WebElement title : titles) {
-            if (title.getText().replaceAll("\\s+", " ").toLowerCase().contains(expectedResult.toLowerCase().trim())) {
-                isHotelFound = true;
-                break;
-            }
-        }
-        assertTrue(isHotelFound, "Hotel '" + expectedResult + "' was not found");
+        List<WebElement> titles = wait.until(ExpectedConditions.presenceOfAllElementsLocatedBy(By.cssSelector("[data-testid='title']")));
+
+        boolean isHotelFound = titles.stream()
+                .map(WebElement::getText)
+                .map(text -> text.replaceAll("\\s+", " ").toLowerCase())
+                .anyMatch(text -> text.contains(cleanExpected));
+
+        assertTrue(isHotelFound, "Hotel '" + expectedResult + "' was not found in the results");
     }
 
     @And("{string} hotel rating is {string}")
@@ -105,16 +111,30 @@ public class SearchStep {
         WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(15));
 
         String cardXpath = String.format(
-                "//div[@data-testid='property-card'][descendant::div[@data-testid='title' and contains(text(), '%s')]]" +
+                "//div[@data-testid='property-card'][descendant::div[@data-testid='title' and contains(normalize-space(.), '%s')]]" +
                         "//div[@data-testid='review-score']/div[@aria-hidden='true']",
                 hotel
         );
 
-        WebElement scoreElement = wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath(cardXpath)));
-        String actualRating = scoreElement.getText().trim().replace(",", ".");
-        String normalizedExpected = expectedRating.trim().replace(",", ".");
+        String actualRating = "";
+        int attempts = 0;
 
-        assertEquals(actualRating, normalizedExpected, "Hotel rating does not match");
+        while (attempts < 3) {
+            try {
+                WebElement scoreElement = wait.until(ExpectedConditions.visibilityOfElementLocated(By.xpath(cardXpath)));
+                actualRating = scoreElement.getText().replaceAll("\\s+", "").replace(",", ".");
+                break;
+            } catch (Exception e) {
+                try { Thread.sleep(300); } catch (InterruptedException ignored) {}
+                attempts++;
+            }
+        }
+
+        String normalizedExpected = expectedRating.replaceAll("\\s+", "").replace(",", ".");
+
+        assertFalse(actualRating.isEmpty(), "Не удалось прочитать рейтинг отеля из-за постоянного обновления страницы");
+        assertEquals(normalizedExpected, actualRating,
+                String.format("Рейтинг для отеля '%s' не совпадает.", hotel));
     }
 
     @After
